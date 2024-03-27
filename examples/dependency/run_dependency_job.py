@@ -4,13 +4,14 @@ import time
 import argparse
 
 parser = argparse.ArgumentParser()
-
-parser.add_argument("--parameter",type=str,help="which parameter set to give the model",default=1)
+parser.add_argument("--log_path",type=str,help="which parameter set to give the model",default="./logs")
 
 def create_slurm_scripts(script_name,parameter,log_path="./logs"
                         ,account="project_462000444"
                         ,cpus_per_task=1,time="00:05:00"
-                        ,mem_per_cpu=500,partition='debug'):
+                        ,mem_per_cpu=100,partition='debug',
+                        py_script='train_model.py',
+                        flag='--parameter'):
     """Creates a slurm script in right string format
 
     Args:
@@ -51,7 +52,7 @@ echo "parameter: {parameter}"
 module purge
 module load cray-python
 srun \
-    python train_model.py --parameter {parameter}
+    python {py_script} {flag} {parameter}
 """ 
 
     return script_content
@@ -59,15 +60,36 @@ srun \
 
 if __name__ == "__main__":
     args = parser.parse_args()
+    something_failed = False
+    dependencies = []
     if not os.path.exists(args.log_path):
         os.mkdir(args.log_path)
-    
-    for param in range(10):
+    for param in range(5):
         temp_file_name = f"{os.getcwd()}/slurm_job_param_{param}.sh"
-        s = create_slurm_scripts(f"train_model_param_{param}",parameter=args.parameter,cpus_per_task=1,time='00:5:00',partition='debug')
+        s = create_slurm_scripts(f"train_model_param_{param}",parameter=param,cpus_per_task=1,time='00:01:00',partition='small',log_path=args.log_path)
         with open(temp_file_name,"w") as temp_file:
             temp_file.write(s)
             # Submit the SLURM job using sbatch with the temporary file
-        subprocess.run(["sbatch", temp_file_name], text=True)
+        result = subprocess.run(["sbatch", temp_file_name], text=True,stdout=subprocess.PIPE)
         time.sleep(1)
+        os.remove(temp_file_name)
+        if result.returncode == 0:
+            output = result.stdout
+            print(output)
+            job_id = output.split()[3]
+            dependencies.append(job_id)
+        else:
+            print(f"Failed to run sbatch with param {param}, terminating the whole loop")
+            something_failed=True
+            break
+    if not something_failed:
+        temp_file_name = f"{os.getcwd()}/slurm_job_final.sh"
+        s = create_slurm_scripts(f"use_best_model",parameter='',py_script='explain_best_model.py',flag='',cpus_per_task=1,time='00:01:00',partition='small',log_path=args.log_path)
+        with open(temp_file_name,"w") as temp_file:
+            temp_file.write(s)
+            # Submit the SLURM job using sbatch with the temporary file
+        result = subprocess.run(["sbatch",f"--dependency=afterok:{':'.join(dependencies)}", temp_file_name],text=True,stdout=subprocess.PIPE)
+        print("Submitting a dependency job")
+        print(result)
+        time.sleep(1) 
         os.remove(temp_file_name)
